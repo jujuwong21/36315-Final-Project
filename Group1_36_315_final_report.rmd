@@ -1,0 +1,561 @@
+---
+title: "36-315 Final Project"
+author: 
+- "Minji Lee, Oliver Qin, Erik Ross, Juliette Wong"
+- "minjil, oqin, erross, jnwong"
+output: 
+  html_document:
+    toc:  true
+    toc_float:  true
+    code_folding: hide
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+###########################
+# DEFAULT SETTINGS
+###########################
+knitr::opts_chunk$set(message = FALSE) # include this if you don't want markdown to knit messages
+knitr::opts_chunk$set(warning = FALSE) # include this if you don't want markdown to knit warnings
+knitr::opts_chunk$set(echo = TRUE) # set echo=FALSE to hide code from html output, TRUE to show
+
+###########################
+# LIBRARIES
+###########################
+library(tidyverse)
+library(gridExtra)
+library(knitr)
+library(pander)
+library(MASS)
+library(GGally)
+library(Hmisc)
+library(forcats)
+library(dendextend)
+library(reshape2)
+library(ggmap)
+library(ggplot2)
+library(colorspace)
+library(maps)
+library(mapproj)
+library(sp)
+
+base_size <- 11
+
+our_theme <- theme_light(
+  base_size = 11,
+  base_family = "",
+  base_line_size = base_size / 22,
+  base_rect_size = base_size / 22
+) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 20, color = "firebrick", face = "bold"),
+    axis.title = element_text(size = 14, color = "royalblue3", face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12, color = "firebrick", face = "bold"),
+    legend.text = element_text(size = 10),
+    strip.text.x = element_text(size = 12, color = "royalblue3", face = "bold"),
+    strip.text.y = element_text(size = 12, color = "firebrick", face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+#  Introduction
+
+As current undergraduate students, we wanted to reflect on our college application process and learn about different colleges in the United States. There are many factors that one might consider when applying to colleges. Many colleges advertise their high endowments, geographic location, and nearby neighborhoods or local communities to entice students into looking into and eventually applying to them. In addition, some students are attracted to the low acceptance rate of universities, as it makes the school seem more elite, competitive, and selective. Other factors that may be of consideration for a student are whether they want to attend a large state university or a smaller private school, as well as what percent of students who enrolled actually graduate from the university. To get a better understanding of the different colleges in the United States, we want to see if these factors are related to one another, and if so, how. 
+
+## Data
+
+Loading and Manipulation of our data set:
+```{r}
+admissions <- read_csv("admissions.csv")
+admissions <- as.data.frame(admissions)
+college_data <- admissions %>%
+  dplyr::select(name = Name, 
+                applicants = `Applicants total`, 
+                admitted = `Admissions total`, 
+                endowment_GASB = `Endowment assets (year end) per FTE enrollment (GASB)`, 
+                endowment_FASB = `Endowment assets (year end) per FTE enrollment (FASB)`,
+                grad_rate = `Graduation rate - Bachelor degree within 5 years, total`,
+                urbanization = `Degree of urbanization (Urban-centric locale)`,  
+                region = `Geographic region`, 
+                control = `Control of institution`) %>%
+  # Calculate Acceptance Rate 
+  mutate(acceptance_rate = admitted / applicants * 100) %>%
+  # Create Endowment column
+  mutate(endowment_GASB = replace(endowment_GASB, is.na(endowment_GASB), 0), 
+         endowment_FASB = replace(endowment_FASB, is.na(endowment_FASB), 0),
+         endowment = endowment_GASB + endowment_FASB) %>%
+  # Rename Geographic regions
+  # I personally did this so the names are shorter / easier to read when plotting the marginal distribution 
+  mutate(region = fct_recode(factor(region), 
+                       "West" = "Far West AK CA HI NV OR WA", 
+                       "Mid East" = "Mid East DE DC MD NJ NY PA", 
+                       "Plains" = "Plains IA KS MN MO NE ND SD", 
+                       "Southeast" = "Southeast AL AR FL GA KY LA MS NC SC TN VA WV", 
+                       "US Service schools" = "US Service schools", 
+                       "Great Lakes" = "Great Lakes IL IN MI OH WI", 
+                        "New England" = "New England CT ME MA NH RI VT",
+                       "Rocky Mountains" = "Rocky Mountains CO ID MT UT WY", 
+                       "Southwest" = "Southwest AZ NM OK TX"
+                       )) %>%
+  # Change Order of Urbanization
+  mutate (urbanization = ordered(urbanization, 
+                                 levels = c("City: Large", "City: Midsize",
+                                            "City: Small", "Suburb: Large",
+                                            "Suburb: Midsize", "Suburb: Small",
+                                            "Town: Fringe", "Town: Distant", 
+                                            "Town: Remote", "Rural: Fringe",
+                                            "Rural: Distant", "Rural: Remote"
+                                            ))) %>%
+ # Make Urbanization less specific (just "City" instead of "City-small")
+  mutate(urbanization_group = fct_recode(factor(urbanization), 
+                                "City" = "City: Large", 
+                                "City" = "City: Midsize", 
+                                "City" = "City: Small", 
+                                "Suburb" = "Suburb: Large", 
+                                "Suburb" = "Suburb: Midsize", 
+                                "Suburb" = "Suburb: Small",
+                                "Town" = "Town: Distant", 
+                                "Town" = "Town: Fringe", 
+                                "Town" = "Town: Remote",
+                                "Rural" = "Rural: Distant", 
+                                "Rural" = "Rural: Fringe", 
+                                "Rural" = "Rural: Remote")) %>%
+  # Change order of urbanization_groups
+  mutate(urbanization_group = ordered(urbanization_group, 
+                                      levels = c("City", "Suburb", "Town", 
+                                                 "Rural"))) %>%
+  dplyr::select(name,acceptance_rate, grad_rate, endowment, urbanization,urbanization_group, region, control) 
+
+# Figure out which colleges were NA
+college_na <- college_data %>% 
+  filter_all(any_vars(is.na(.) | . == 0))
+
+# Filter out colleges with NA or 0
+college_data <- college_data %>%
+  drop_na() %>%
+  filter(endowment != 0 & grad_rate != 0)
+```
+
+Additional data needed for later graphics:
+```{r}
+state_region <- data.frame(State = toupper(state.abb))
+state_region <- state_region %>%
+  mutate(region = case_when(# West
+                            State == "AK" ~ "West", 
+                            State == "CA" ~ "West",
+                            State == "HI" ~ "West",
+                            State == "NV" ~ "West", 
+                            State == "OR" ~ "West",
+                            State == "WA" ~ "West", 
+                            # Mid East
+                            State == "DE" ~ "Mid East",
+                            State == "DC" ~ "Mid East",
+                            State == "MD" ~ "Mid East",
+                            State == "NJ" ~ "Mid East",
+                            State == "NY" ~ "Mid East",
+                            State == "PA" ~ "Mid East",
+                            # Plains
+                            State == "IA" ~ "Plains", 
+                            State == "KS" ~ "Plains", 
+                            State == "MN" ~ "Plains", 
+                            State == "MO" ~ "Plains", 
+                            State == "NE" ~ "Plains", 
+                            State == "ND" ~ "Plains", 
+                            State == "SD" ~ "Plains", 
+                            # South East
+                            State == "AL" ~ "Southeast", 
+                            State == "AR" ~ "Southeast", 
+                            State == "FL" ~ "Southeast", 
+                            State == "GA" ~ "Southeast", 
+                            State == "KY" ~ "Southeast", 
+                            State == "LA" ~ "Southeast", 
+                            State == "MS" ~ "Southeast",
+                            State == "NC" ~ "Southeast", 
+                            State == "SC" ~ "Southeast", 
+                            State == "TN" ~ "Southeast",
+                            State == "VA" ~ "Southeast", 
+                            State == "WV" ~ "Southeast", 
+                            # Great Lakes
+                            State == "IL" ~ "Great Lakes", 
+                            State == "IN" ~ "Great Lakes", 
+                            State == "MI" ~ "Great Lakes", 
+                            State == "OH" ~ "Great Lakes", 
+                            State == "WI" ~ "Great Lakes",
+                            # New England
+                            State == "CT" ~ "New England", 
+                            State == "ME" ~ "New England",
+                            State == "MA" ~ "New England",
+                            State == "NH" ~ "New England",
+                            State == "RI" ~ "New England",
+                            State == "VT" ~ "New England",
+                            # Rocky Mountains
+                            State == "CO" ~ "Rocky Mountains",
+                            State == "ID" ~ "Rocky Mountains",
+                            State == "ID" ~ "Rocky Mountains",
+                            State == "MT" ~ "Rocky Mountains",
+                            State == "UT" ~ "Rocky Mountains",
+                            State == "WY" ~ "Rocky Mountains",
+                            # Southwest
+                            State == "AZ" ~ "Southwest",
+                            State == "NM" ~ "Southwest",
+                            State == "OK" ~ "Southwest",
+                            State == "TX" ~ "Southwest",
+                            TRUE ~ "Hi"))
+
+state_names <- data_frame(state.abb, state.name = tolower(state.name))
+
+state_data <- map_data("state")
+
+state_data <- state_data %>%
+  mutate(region = tolower(region))
+  
+state_data <- state_data %>%
+  left_join(state_names, by = c("region" = "state.name"))
+
+region_data <- map_data("state")
+
+region_data <- region_data %>%
+  mutate(region = tolower(region))
+
+region_data <- region_data %>%
+  left_join(state_names, by = c("region" = "state.name"))
+
+s_region <- state_region
+```
+
+For our project, we found a college admissions dataset hosted on Kaggle that contained various information about numerous colleges and universities in the United States and that was most recently updated with data from 2013-2014 [(link here)](https://www.kaggle.com/samsonqian/college-admissions). In total, there were 1,517 observations and 108 columns in the original dataset, but we chose to subset variables that were relevant to our research questions and goals. After removing incomplete rows, we ended up with 1339 observations and 7 columns of data. Each observation refers to an individual college or university in the United States. 
+
+The quantitative variables we chose are `endowment`, the total endowment (in dollars), `grad_rate`, the 5-year graduation rate (in percent), and `acceptance rate` the undergraduate acceptance rate (in percent). The categorical variables we chose are `urbanization`, the degree of urbanization of an institution, `region`, the geographical region for the school, and `control`, whether the institution is private or public. 
+
+We chose to only include rows that did not contain any `NA` values. For many of these rows, there were NA values for multiple variables, especially for continuous variables. In total, 195 of the original 1534 rows, or approximately 12% of the observations, were omitted from our analyses. These omitted rows had similar distributions of degree of urbanization, geographic and control of institution as the non-NA rows. However, they had higher mean and median acceptance rates, lower mean and median graduation rates, and lower mean and median endowments than the rows that did not have NA values, so any further analyses involving continuous variables might not be the most accurate. 
+
+Summary of Colleges with NA Values:
+```{r}
+summary(college_na)
+```
+
+The first 6 lines of our data to help understand the dataset:
+```{r}
+college_data %>% head() %>% pander()
+```
+
+## Goals
+
+There are a few general questions that we wish to answer with our dataset. First we would like to explore what the relationship between endowment and graduation rate is for colleges. We would also like to explore the relationship between acceptance rate and graduation rate. Finally, we would like to know how a public school differs from a private school in terms of region, urbanization, endowment, and graduation rate. We hypothesize that the endowment and graduation rates would be positively correlated, that colleges would be generally evenly distributed across America, and that colleges with lower acceptance rates would have higher graduation rates as well. We also believe that public universities and private universities would largely be similar in urbanization, endowment and acceptance rate, with perhaps a lower graduation rate from public universities. 
+
+## Exploring the variables
+
+Given that our dataset has 108 variables, for the purpose of our project (and this question), we chose to focus on the following variables:
+
+### Categorical Variables: 
+
+#### Urbanization
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = urbanization, fill = urbanization)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Degree of Urbanization",
+    x = "Degree of Urbanization",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme +
+  theme(
+    axis.text = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "none"
+  )
+```
+
+This graph shows the marginal distribution of degree of urbanization. It shows count in the y-axis and degree of urbanization in the x-axis. The category with the highest number of universities is Large City & the category with the smallest is Rural Remote.
+
+#### Region
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = region, fill = region)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Geographic Regions",
+    x = "Geographic Region",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme +
+  theme(
+    axis.text = element_text(angle = 45, hjust = 1, size = 6),
+    legend.position = "none"
+  )
+```
+
+This graph shows the marginal distribution of geographic region. It shows count in the y-axis and geogrpahic region in the x-axis. The region with the highest number of universities is the Southeast & the region with the smallest is the Rocky Mountains.
+
+#### Control
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = control, fill = control)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Control of Institution",
+    x = "Control of Institution",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme +
+  theme(
+    axis.text = element_text(size = 10),
+    legend.position = "none"
+  )
+```
+
+This graph shows the marginal distribution of control of institution (public or private). It shows count in the y-axis and control in the x-axis. It shows that for every public university in the dataset, there are approximately 1.6 private universities. 
+
+### Continuous Variables: 
+
+#### Endowment:
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = log(endowment))) +
+  geom_histogram() +
+  labs(
+    title = "Distribution of Endowment for Universities",
+    x = "Log of Endowment",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme +
+  theme(plot.title = element_text(size = 14))
+```
+
+This graph shows the marginal distribution of log(endowment). It shows count in the y-axis and log of endowment in the x-axis. The log transformation was necessary to not have the date be two skewed towards high outliers.
+
+#### Acceptance Rate:
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = acceptance_rate)) +
+  geom_histogram() +
+  labs(
+    title = "Distribution of Acceptance Rate",
+    x = "Acceptance Rate (%)",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme
+```
+
+This graph shows the marginal distribution of acceptance rate (%). It shows count in the y-axis and acceptance rate (%) in the x-axis. The bin with the largest number of universities has an acceptance rate of about 70%.
+
+#### 5Y Graduation Rate:
+```{r, echo = TRUE}
+ggplot(college_data, aes(x = grad_rate)) +
+  geom_histogram() +
+  labs(
+    title = "Distribution of Graduation Rate (w/in 5 years)",
+    x = "Graduation Rate (%)",
+    y = "Number of Universities",
+    caption = "Source: Kaggle"
+  ) +
+  our_theme
+```
+
+This graph shows the marginal distribution of graduation rate (%). It shows count in the y-axis and graduation rate (%) in the x-axis. The bin with the largest number of universities has a graduation rate of about 45%.
+
+# Methods
+
+### Acceptance Rate By Graduation Rate
+
+```{r, echo = T}
+ggplot(college_data, aes(x = acceptance_rate, y = grad_rate)) + geom_point() + labs(title = "Relationship Between Acceptance Rate and Graduation Rate of Colleges", x = "Acceptance Rate (%)", y = "Graduation Rate (%)", caption = "Source: Kaggle") + geom_smooth(method = "lm", se=TRUE, level = 0.95) + our_theme +
+  theme(plot.title = element_text(size = 12))
+```
+
+From the scatter plot and the linear regression line we can see that there is a weak but negative correlation between the acceptance rate and the graduation rate of colleges. This means that in general, colleges with lower acceptance rates tend to have higher graduation rates; conversely, colleges with higher acceptance rates tend to have lower acceptance rates. Furthermore, the relationship seems to be relatively weak, as a lot of the data points in the scatter plots are far away from the regression line. For further analysis, we can try to include another variable that might split the colleges by region, and find subsequent regression lines for the different regions to see whether the region of the college affects the relationship between acceptance rate and the graduation rate. However, this extra variable does not have to be fixed by region; other variables such as urbanization and control (public vs. private) could be applied as well.
+
+### Urbanization by Public/Private
+
+```{r, echo = T}
+ggplot(college_data, aes(x = urbanization, fill = control)) + geom_bar(position = "dodge") + labs(title = "Distribution of Urbanization Level by Type of Colleges", x = "Urbanization Level of College", y = "Frequency", fill = "Type of College", caption = "Source: Kaggle") + our_theme +   theme(axis.text.x = element_text(angle=45, hjust = .9))
+```
+
+From the bar graphs we can determine quite a few things. First, it seems like there are more private colleges than public colleges in the dataset. Second, the levels of urbanization where there are a lot more private colleges than public ones lie in large cities and large suburbs. Third, the levels of urbanization where public colleges are more than private colleges are either in remote towns or small/midsize suburbs. These are interesting findings because it seems like there are more private colleges in areas with a large concentration of people, but in small/mid-size areas some levels of urbanization clearly side with the public colleges, while others show a clear advantage in the number of private colleges. An intriguing future step would be to compare population density with the distribution of public vs. private colleges.
+
+### Graduation Rate by Urbanization, faceted by Control
+
+```{r, echo = T}
+con.labs <- c("Private", "Public")
+names(con.labs) <- c("Private not-for-profit", "Public")
+
+ggplot(college_data, aes(x = urbanization, y = grad_rate, fill = urbanization_group)) + 
+  geom_boxplot() + 
+  facet_grid(control~., labeller = labeller(control = con.labs)) +
+  scale_fill_discrete_sequential(palette = "Sunset") + 
+  our_theme + 
+  labs(x = "Urbanization",
+       y = "Graduation Rate",
+       fill = "Urbanization Group",
+       title = "Graduation Rate vs. Urbanization Group \n by Type of School", 
+       caption = "Source: Kaggle") +
+  theme(axis.text.x = element_text(angle=45, hjust = .9))
+```
+
+```{r, results = "hide"}
+anova(lm(college_data$grad_rate ~ college_data$urbanization + college_data$control))
+private_grad <- college_data$grad_rate[which(college_data$control == "Private not-for-profit")]
+public_grad <- college_data$grad_rate[which(college_data$control == "Public")]
+
+t.test(private_grad, public_grad)
+```
+
+From the boxplot, we see that private schools, on average, have a higher graduation rate than public schools. We also see that schools in cities and suburbs have similar medians and variability in graduation rate, but that the median graduation rate is lower in schools in rural regions. With the exception of the public schools in the `rural: fringe` degree of urbanization, it appears that rural schools have less variability in their graduation rate. 
+
+To confirm what we see in the visualization, a two-sample t-test to compare the difference in graduation rate means for the type of school was performed. From the output, we see that the mean graduation rate of private and public schools are approximately 55.9% and 44.5%, respectively. We obtain a p-value less than 2.2e-16, allowing us to reject the null hypothesis and believe that there is a significant difference in mean graduation rate across type of school.
+
+An anova test was conducted to compare the graduation rates across urbanization and control. For both urbanization and control, the p-values were extremely small. Thus, we have sufficient evidence to believe that there are significant differences in graduation rate based on both urbanization and control. 
+
+### Control of School by Region
+```{r, echo = T}
+ggplot(college_data, aes(x = region, fill = control)) + 
+  geom_bar(position = 'dodge') + 
+  labs(title = "Distribution of Control of Schools by Region",
+       x = "Region", y = "Number of Schools", fill = "Control of School",
+       caption = "Source: Kaggle") +
+  our_theme
+```
+
+### Control of School by Region
+```{r}
+control_region <- college_data %>%
+  group_by(region, control) %>%
+  summarise(count = n())
+
+state_region <- state_region %>% 
+  left_join(control_region, by = c("region" = "region"))
+
+state_data <- state_data %>%
+  left_join(state_region, by = c("state.abb" = "State")) %>%
+  drop_na(control)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.width = 10, fig.height = 8, echo = TRUE}
+ggplot(state_data) +
+  geom_polygon(aes(x = long, y = lat, group = group, fill = count), 
+               color = "black") + 
+  scale_fill_gradient2(low = "green", mid = "white", high = "purple", midpoint = 110) +
+  theme_void() +
+  coord_map("polyconic") + 
+  facet_wrap(~control, labeller = labeller(control = con.labs)) + 
+  labs(title = "Distribution of Control of Schools by Region",
+        fill = "Number of Schools",
+       caption = "Source: Kaggle") + 
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, color = "firebrick", face = "bold"),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    legend.title = element_text(size = 12, color = "firebrick", face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    strip.text.x = element_text(size = 12, color = "royalblue3", face = "bold")
+    )
+
+```
+
+Using the choropleth maps, we can see that overall, there are more private schools than public schools nationally. We can also see that for both private and public schools, more schools are located in the east coast of the country, especially the southeast states that are highlighted in purple. We can also see that there are the least number of schools in the west coast of the country for both private and public schools. For further analysis, we can try collecting data of the population of each state to compute the number of schools per capita and observe if there is any difference with the current visualization, since east coast has relatively dense population distribution, and this can affect the number of schools.  
+
+### Endowment vs Grad rate
+
+```{r, echo = T}
+ggplot(college_data, aes(x = grad_rate, y = log(endowment))) + 
+  geom_point() + 
+  geom_smooth(method = lm, se = TRUE, level = 0.95) +
+  labs(title = "Graduation Rate vs. Log of Endowment",
+       x = "Graduation Rate", y = "log(Endowment)",
+       caption = "Source: Kaggle") + 
+  our_theme
+```
+
+First, since the endowment had significantly larger units, we transformed the data into logarithm of endowment, and plotted a scatter plot with graduation rate on the x-axis and logarithm of endowment on the y-axis. The scatter plot shows an overall positive relationship between the two variables. This is more apparent with the linear regression line. Since the 95% error bound of the regression line doesn’t include slope of 0, we needed further testing to confirm that there indeed is a positive relationship.
+
+When we created a linear regression model and outputted the summary, we could see that the p-value of the slope is extremely small, confirming that we reject the null hypothesis that there is no relationship between the two variables. The positive slope value, 0.06, also confirms that there is a positive relationship between the two variables. 
+
+### Endowment by region, faceted by public/private
+
+```{r}
+
+s_region <- s_region %>%
+  mutate(region = tolower(region))
+
+us_data <- map_data("state") %>%
+  filter(region != "district of columbia")
+
+lookup <- data.frame(
+  state_abbrev = state.abb,
+  state_full = tolower(state.name)
+)
+
+us_data <- us_data %>%
+  left_join(lookup, by = c("region" = "state_full"))
+
+us_data <- us_data %>%
+  left_join(s_region, by = c("state_abbrev" = "State"))
+
+us_data <- us_data %>%
+  mutate(usregion = region.y)
+
+c_data <- college_data %>%
+  dplyr::select(name, endowment, region, control)
+
+c_data <- c_data %>%
+  mutate(region = tolower(region))
+
+endowment_by_region_by_control <- c_data %>%
+  group_by(control, region) %>%
+  summarise(Count = n(),
+    mean_endowment = mean(endowment, na.rm = T))
+
+us_data <- us_data %>%
+  left_join(endowment_by_region_by_control, by = c("region.y" = "region"))
+```
+
+```{r, warning=FALSE, message=FALSE, fig.width = 10, fig.height = 8, echo = TRUE}
+ggplot(us_data) +
+  geom_polygon(aes(x = long, y = lat, group = group, color = usregion, fill = mean_endowment), size = 1.05) +
+  scale_fill_distiller(type = "div", limits = c(min(us_data$mean_endowment), max(us_data$mean_endowment)), palette = "RdYlBu", na.value = "grey50") +
+  facet_wrap(control ~ ., labeller = labeller(control = con.labs)) +
+  coord_map("polyconic") +
+  labs(
+    title = "Endowment by Region and Control",
+    color = "Region",
+    fill = "Average Endowment",
+    caption = "Source: Kaggle"
+  ) + 
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, color = "firebrick", face = "bold"),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    legend.title = element_text(size = 12, color = "firebrick", face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "bottom",
+    legend.direction = "vertical",
+    strip.text.x = element_text(size = 12, color = "royalblue3", face = "bold")
+    )
+```
+
+The hypothesis question that this graph investigated is: how is endowment affected by university region and control? The above map was constructed using ggmap, colring the outline of the US states by which region (Great Lakes, Mid East, New England, Plains, Rocky Mountains, Southeast, Southwest, or West), coloring the inside of each region by the region's average endowment size, and facetting the two graphs by control (Public or Private). From the resulting graph, one can observe that for public institutions, they all have a significantly lower average endowment size than private institution. However, of note, when investigating just Public institutions (and scaling it accordingly), there is still a very simila average endowment regardless of the scale. Furthermore, for Private univeristies, once can observe that New England and the West have by far the largest average endowment, while the Mid East and the Southwest still have a fairly large average endowment, & all remaining regions still have a larger average endowment than any public school region. Of note, while hard to thoroughly investigate, a minor analysis of possible changes in results if calculating average endowment at a per capita rate did not signifcantly change anything, as the ratios of the number of schools between regions is rather proportional with the state/region populations. Ultimately, these results were generally in line with our hypotheses!
+
+# Conclusion
+
+## Results
+
+Through the observation we gained multiple insights about the data. First, we learned that there is a large proportion of private colleges compared to public, and they tend to be in large suburbs or cities.  Geographically, we learned that the Southeast region appears to be more frequent for private and public colleges. Also, it seems like the urbanization of colleges does not significantly impact the graduation rate of public nor private colleges; however, private colleges seem to have higher 5 year graduation rates. Endowment seems to be higher for the Northeast and West regions for private colleges; with regards to public colleges, endowment is more evenly distributed across regions. Moreover, average endowment and 5-year graduation rates are positively associated.
+
+Most of the findings were in line with our initial hypothesis, while there were a few notable exceptions. While we thought the overall number of schools wouldn’t depend on the region, we found that the Southeast region had the most number of schools regardless of whether it is public or private. Also, we found that the endowment distribution is very different between private and public schools which was contrasting from our initial thoughts. 
+
+## Discussion
+
+While this dataset was very useful and effective in investigating our questions, there were some minor limitations of our data/analysis. First, the data isn’t very recent (2013-2014), though it does seem as if it is still being updated every year but that there is a lag in the data. Next, some colleges had missing information, which we noted and summarized above but did not utilize in our methods. Lastly, the dataset does not include Private for-profit Institutions, a whole additional segment of the education landscape which could shed light on some interesting findings.
+
+While we chose these 7 specific columns/variables and these 6 specific graphics/relationships to investigate, there were some future considerations/investigations which we were not able to include. First, there was a significant amount of data regarding undergraduate vs. graduate statistics. While not all universities have graduate programs, this is a very intriguing potential relationship we could have investigated. Second, the dataset included a significant number of admissions related statistics (including standardized testing, high school gpa, etc.). While we wanted to focus more on the national college environment (rather than college admissions), there could definitely have been many potential interesting lines of inquiry on that matter. Next, similarly to with undergraduate vs. graduate, we could also have investigated
+full time vs. part time enrollment/students. Lastly, the dataset included some variables related to student alcohol consumption (and other related scores on student social behavior), which is actually (according to the comment on Kaggle) the most frequent use of the dataset. While this would have completely changed the nature of our project, this is a way that someone could take our same dataset and create a whole different genre of analysis/focus.
+
+  
+
+
+
+
