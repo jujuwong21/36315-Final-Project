@@ -1,6 +1,6 @@
 # CMU Statistical Graphics and Visualization Final Project
 
-* **Online URL**: https://jujuwong21.github.io/StatVisFinalProject/
+* **Online URL**: https://jujuwong21.github.io/36315-Final-Project/
 * **Team members**:
   * Juliette Wong (jnwong@andrew.cmu.edu)
   * Oliver Qin (oqin@andrew.cmu.edu)
